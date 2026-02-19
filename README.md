@@ -1,43 +1,41 @@
-# GitHub Copilot plugin for Godot 4.6
+# copilot.gd
 
-A lightweight open-source Godot editor plugin that connects to `@github/copilot-language-server` and shows inline ghost-text suggestions inside `CodeEdit`.
+GitHub Copilot plugin for Godot 4.6.
 
-## What is implemented
+## Requirements
 
-- GitHub Copilot authentication (device flow).
-- Inline completion requests from current caret position.
-- Ghost-text overlay in script editor.
-- `Tab` to accept, `Esc` to dismiss.
-- Better mid-line behavior:
-  - removes already typed prefix from suggestions;
-  - trims overlapping suffix (for cases like `print(|)` where Copilot returns `"Hello")`);
-  - visually shifts the original right-side text while ghost suggestion is shown.
+- Godot 4.6
+- Node.js + NPM
+- GitHub account with Copilot access
 
-## Install
+Install Node.js from https://nodejs.org/en/download/.
+If you use a package manager, make sure to install NPM as well (for example: `apt install nodejs npm` on Debian/Ubuntu).
 
-1. Copy plugin files into your project addon folder:
-   - `res://addons/github_copilot/plugin.cfg`
-   - `res://addons/github_copilot/plugin.gd`
-   - `res://addons/github_copilot/copilot_manager.gd`
-   - `res://addons/github_copilot/copilot_panel.gd`
-   - `res://addons/github_copilot/copilot_overlay.gd`
-2. In Godot: **Project Settings → Plugins**.
-3. Enable **GitHub Copilot** plugin.
-4. Open Copilot panel, sign in, and start typing in a script.
+To access GitHub Copilot, an active GitHub Copilot subscription is required.
+You can sign up for GitHub Copilot Free, or request access from your enterprise admin:
+https://github.com/settings/copilot
 
-## Runtime requirements
+## Installation
 
-- Godot `4.6`.
-- `node` in `PATH`.
-- Either:
-  - `npx` in `PATH` (recommended), or
-  - global `copilot-language-server` (`npm i -g @github/copilot-language-server`).
+1. Download this repository as `.zip`.
+2. Unpack the `copilot.gd` folder.
+3. Copy plugin files into your Godot project:
+   - create folder `res://addons/github_copilot/`
+   - copy `plugin.cfg`, `plugin.gd`, `copilot_manager.gd`, `copilot_panel.gd`, `copilot_overlay.gd` into it.
+4. Open Godot project.
+5. Go to **Project Settings → Plugins** and enable **GitHub Copilot**.
+
+After enabling, a **Copilot** tab appears in the editor. There you can sign in using GitHub OAuth.
+
+## Usage
+
+- Open a script in Godot editor.
+- Start typing.
+- Wait for inline suggestion (ghost text).
+- Press `Tab` to accept.
+- Press `Esc` to dismiss.
 
 ## Notes
 
-- The plugin asks Copilot with exact caret `line` and `character`, so Copilot *does* know cursor position.
-- Some completions may still include closing tokens from the right side; this plugin now trims overlap before rendering and before insertion.
-
-## Inspiration
-
-Inline UX behavior is aligned with the `copilot.vim` approach for mid-line completions.
+- Plugin sends completion request with exact caret line/column, so Copilot knows cursor position.
+- Mid-line completion now trims overlap with the text on the right side and renders suffix shifted, similar to `copilot.vim` behavior.

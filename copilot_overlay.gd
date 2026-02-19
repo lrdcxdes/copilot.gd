@@ -23,7 +23,6 @@ func show_suggestion(text: String, code_edit: CodeEdit) -> void:
 	_insert_line = code_edit.get_caret_line()
 	_insert_col = code_edit.get_caret_column()
 
-	# Remove the already-typed prefix and any overlapping suffix.
 	_suggestion = _sanitize_suggestion(text, code_edit, _insert_line, _insert_col)
 	_suggestion = _trim_suffix_overlap(_suggestion)
 
@@ -51,14 +50,22 @@ func _find_overlap(a: String, b: String) -> int:
 func _trim_suffix_overlap(text: String) -> String:
 	if not is_instance_valid(_code_edit) or _insert_line < 0 or _insert_col < 0:
 		return text
-	var current_line := _code_edit.get_line(_insert_line)
-	var suffix := current_line.substr(_insert_col)
+
+	var suffix := _code_edit.get_line(_insert_line).substr(_insert_col)
 	if suffix.is_empty():
 		return text
-	var overlap := _find_overlap(text, suffix)
+
+	var lines := text.split("\n")
+	if lines.is_empty():
+		return text
+
+	var last := lines[lines.size() - 1]
+	var overlap := _find_overlap(last, suffix)
 	if overlap <= 0:
 		return text
-	return text.substr(0, text.length() - overlap)
+
+	lines[lines.size() - 1] = last.substr(0, last.length() - overlap)
+	return "\n".join(lines)
 
 func accept_suggestion() -> void:
 	if not has_suggestion() or not is_instance_valid(_code_edit):
@@ -76,7 +83,6 @@ func accept_suggestion() -> void:
 
 	hide_suggestion()
 
-# Intelligent cleaner that handles Tabs vs Spaces mismatches
 func _sanitize_suggestion(text: String, editor: CodeEdit, line: int, col: int) -> String:
 	var line_text := editor.get_line(line)
 	var prefix := line_text.substr(0, col)
@@ -84,11 +90,10 @@ func _sanitize_suggestion(text: String, editor: CodeEdit, line: int, col: int) -
 	if text.begins_with(prefix):
 		return text.substr(prefix.length())
 
-	var stripped_prefix := prefix.strip_edges(false, true) # Strip right only
+	var stripped_prefix := prefix.strip_edges(false, true)
 	if text.begins_with(stripped_prefix):
 		return text.substr(stripped_prefix.length())
 
-	# Fuzzy match for tab/space mismatches.
 	var p_idx := 0
 	var t_idx := 0
 	var p_len := prefix.length()
@@ -116,7 +121,7 @@ func _sanitize_suggestion(text: String, editor: CodeEdit, line: int, col: int) -
 		return text.substr(t_idx)
 
 	if text.strip_edges().begins_with(prefix.strip_edges()):
-		var raw_prefix_end = text.find(prefix.strip_edges()) + prefix.strip_edges().length()
+		var raw_prefix_end := text.find(prefix.strip_edges()) + prefix.strip_edges().length()
 		if raw_prefix_end > 0:
 			return text.substr(raw_prefix_end)
 
@@ -144,28 +149,55 @@ func _draw() -> void:
 
 	var prefix := _code_edit.get_line(_insert_line).substr(0, _insert_col).replace("\t", tab_spaces)
 	var prefix_width := font.get_string_size(prefix, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
-	var lines := _suggestion.split("\n")
 
-	for i in range(lines.size()):
-		var line_display := lines[i].replace("\t", tab_spaces)
+	var suggestion_lines := _suggestion.split("\n")
+	var suggestion_display := []
+	for line in suggestion_lines:
+		suggestion_display.append(line.replace("\t", tab_spaces))
+
+	var suffix := _code_edit.get_line(_insert_line).substr(_insert_col).replace("\t", tab_spaces)
+	var has_suffix := not suffix.is_empty()
+	var suffix_width := 0.0
+	if has_suffix:
+		suffix_width = font.get_string_size(suffix, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+
+	# Hide native suffix under the caret so we can redraw it shifted.
+	if has_suffix:
+		var bg := _code_edit.get_theme_color("background_color", "CodeEdit")
+		draw_rect(
+			Rect2(
+				Vector2(line_start_rect.position.x + prefix_width, caret_rect.position.y),
+				Vector2(suffix_width + 4.0, line_height)
+			),
+			bg,
+			true
+		)
+
+	for i in range(suggestion_display.size()):
 		var draw_pos := Vector2(
 			line_start_rect.position.x + prefix_width if i == 0 else line_start_rect.position.x,
 			caret_rect.position.y + (i * line_height) + v_offset
 		)
-		draw_string(font, draw_pos, line_display, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, GHOST_COLOR)
+		draw_string(font, draw_pos, suggestion_display[i], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, GHOST_COLOR)
 
-	# If caret is in the middle of line, visually push suffix to the right.
-	if lines.size() == 1:
-		var raw_suffix := _code_edit.get_line(_insert_line).substr(_insert_col)
-		if not raw_suffix.is_empty():
-			var suffix := raw_suffix.replace("\t", tab_spaces)
-			var inserted := lines[0].replace("\t", tab_spaces)
-			var suffix_x := line_start_rect.position.x + prefix_width
-			var suffix_width := font.get_string_size(suffix, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
-			var inserted_width := font.get_string_size(inserted, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
-			var bg := _code_edit.get_theme_color("background_color", "CodeEdit")
-			draw_rect(Rect2(Vector2(suffix_x, caret_rect.position.y), Vector2(suffix_width + inserted_width + 4.0, line_height)), bg, true)
-			draw_string(font, Vector2(suffix_x + inserted_width, caret_rect.position.y + v_offset), suffix, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, _code_edit.get_theme_color("font_color", "CodeEdit"))
+	if has_suffix:
+		var target_line := _insert_line + suggestion_display.size() - 1
+		var target_line_rect := _code_edit.get_rect_at_line_column(target_line, 0)
+		var target_y := caret_rect.position.y + ((suggestion_display.size() - 1) * line_height) + v_offset
+		var x_shift := 0.0
+		if suggestion_display.size() == 1:
+			x_shift = prefix_width + font.get_string_size(suggestion_display[0], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+		else:
+			x_shift = font.get_string_size(suggestion_display[suggestion_display.size() - 1], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+		draw_string(
+			font,
+			Vector2(target_line_rect.position.x + x_shift, target_y),
+			suffix,
+			HORIZONTAL_ALIGNMENT_LEFT,
+			-1,
+			font_size,
+			_code_edit.get_theme_color("font_color", "CodeEdit")
+		)
 
 func _process(_dt: float) -> void:
 	if visible and is_instance_valid(_code_edit):
