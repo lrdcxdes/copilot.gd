@@ -82,7 +82,7 @@ func request_completion(text: String, line: int, col: int, uri: String) -> void:
 		var items: Array = result.get("items", [])
 		if items.is_empty():
 			return
-		var t: String = str(items[0].get("insertText", "")).strip_edges()
+		var t: String = str(items[0].get("insertText", ""))
 		if not t.is_empty():
 			suggestion_received.emit(t)
 	)
