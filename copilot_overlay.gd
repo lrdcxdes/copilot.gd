@@ -181,17 +181,27 @@ func _draw() -> void:
 		draw_string(font, draw_pos, suggestion_display[i], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, GHOST_COLOR)
 
 	if has_suffix:
-		var target_line := _insert_line + suggestion_display.size() - 1
-		var target_line_rect := _code_edit.get_rect_at_line_column(target_line, 0)
+		# Draw suffix where it would end up after accepting completion.
+		# For multi-line suggestions we cannot query non-existent target line rect,
+		# so we compute virtual position from caret line + line_height.
 		var target_y := caret_rect.position.y + ((suggestion_display.size() - 1) * line_height) + v_offset
 		var x_shift := 0.0
 		if suggestion_display.size() == 1:
 			x_shift = prefix_width + font.get_string_size(suggestion_display[0], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
 		else:
 			x_shift = font.get_string_size(suggestion_display[suggestion_display.size() - 1], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+
+		var target_x := line_start_rect.position.x + x_shift
+		var bg := _code_edit.get_theme_color("background_color", "CodeEdit")
+		var redraw_width := font.get_string_size(suffix, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+		draw_rect(
+			Rect2(Vector2(target_x, target_y - v_offset), Vector2(redraw_width + 4.0, line_height)),
+			bg,
+			true
+		)
 		draw_string(
 			font,
-			Vector2(target_line_rect.position.x + x_shift, target_y),
+			Vector2(target_x, target_y),
 			suffix,
 			HORIZONTAL_ALIGNMENT_LEFT,
 			-1,
