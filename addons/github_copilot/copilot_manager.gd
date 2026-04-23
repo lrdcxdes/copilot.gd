@@ -177,7 +177,11 @@ func _start_lsp() -> String:
 		_starting = false
 		return "No free TCP port in 49200-49299"
 
-	var relay_args := [relay_path, str(_tcp_port), lsp_bin] + lsp_args
+	# Pass node's bin dir to the relay so child processes (e.g. npx's
+	# `#!/usr/bin/env node` shebang on NVM/fnm installs) can resolve `node`
+	# even if Godot was launched from a desktop entry without that dir in PATH.
+	var node_dir := node.get_base_dir()
+	var relay_args := [relay_path, str(_tcp_port), node_dir, lsp_bin] + lsp_args
 	_relay_pid = OS.create_process(node, relay_args)
 	if _relay_pid < 0:
 		_starting = false
@@ -430,17 +434,89 @@ func _kill_orphan_relay() -> void:
 
 # ── _which ────────────────────────────────────────────────────────────────────
 
+# Resolve an executable the same way a shell would, but robustly for GUI
+# launches on Linux/macOS where Godot may not inherit the user's full PATH
 func _which(base: String) -> String:
 	var is_win := OS.get_name() == "Windows"
 	var cands  := ([base + ".cmd", base + ".exe", base] if is_win else [base]) as Array
+
 	for c in cands:
-		var out := []; var code := OS.execute("where" if is_win else "which", [c], out)
+		var out := []
+		var code := OS.execute("where" if is_win else "which", [c], out)
 		if code != 0 or out.is_empty(): continue
 		for raw_line in (out[0] as String).split("\n"):
 			var path: String = raw_line.strip_edges().trim_suffix("\r")
 			if path.is_empty() or "not find" in path.to_lower(): continue
 			if path.begins_with("which:") or path.begins_with("INFO:"): continue
-			return path
+			if FileAccess.file_exists(path): return path
+
+	if is_win:
+		return ""
+
+	# Fall back to a login+interactive shell so the user's profile scripts
+	# (which set up NVM / fnm / volta / asdf) get a chance to populate PATH.
+	for sh in ["zsh", "bash"]:
+		if _which_raw(sh).is_empty(): continue
+		for c in cands:
+			var out2 := []
+			var code2 := OS.execute(sh, ["-lic", "command -v " + c + " 2>/dev/null"], out2)
+			if code2 != 0 or out2.is_empty(): continue
+			for raw_line in (out2[0] as String).split("\n"):
+				var p: String = raw_line.strip_edges().trim_suffix("\r")
+				if p.is_empty() or not p.begins_with("/"): continue
+				if FileAccess.file_exists(p): return p
+
+	# Last-resort scan of common install locations.
+	var home := OS.get_environment("HOME")
+	var search_dirs: Array[String] = [
+		"/usr/local/bin",
+		"/usr/bin",
+		"/bin",
+		"/opt/homebrew/bin",
+		"/snap/bin",
+	]
+	if not home.is_empty():
+		search_dirs.append(home.path_join(".volta/bin"))
+		search_dirs.append(home.path_join(".asdf/shims"))
+		search_dirs.append(home.path_join(".local/bin"))
+		var nvm_bin := _latest_versioned_bin(home.path_join(".nvm/versions/node"), "bin")
+		if not nvm_bin.is_empty(): search_dirs.append(nvm_bin)
+		var fnm_bin := _latest_versioned_bin(home.path_join(".local/share/fnm/node-versions"), "installation/bin")
+		if not fnm_bin.is_empty(): search_dirs.append(fnm_bin)
+
+	for c in cands:
+		for d in search_dirs:
+			var candidate := (d as String).path_join(c)
+			if FileAccess.file_exists(candidate): return candidate
+
+	return ""
+
+# Return the latest subdirectory (lexicographic sort works for "vX.Y.Z" names
+# produced by Node version managers) joined with `suffix`, if it's a valid
+# directory; otherwise "".
+func _latest_versioned_bin(root: String, suffix: String) -> String:
+	if not DirAccess.dir_exists_absolute(root): return ""
+	var da := DirAccess.open(root)
+	if da == null: return ""
+	var versions: Array[String] = []
+	da.list_dir_begin()
+	var name := da.get_next()
+	while name != "":
+		if da.current_is_dir() and not name.begins_with("."):
+			versions.append(name)
+		name = da.get_next()
+	da.list_dir_end()
+	if versions.is_empty(): return ""
+	versions.sort()
+	var bin_dir := root.path_join(versions[versions.size() - 1]).path_join(suffix)
+	return bin_dir if DirAccess.dir_exists_absolute(bin_dir) else ""
+
+func _which_raw(bin: String) -> String:
+	var out := []
+	var code := OS.execute("which", [bin], out)
+	if code == 0 and not out.is_empty():
+		var p: String = (out[0] as String).strip_edges()
+		if not p.is_empty() and p.begins_with("/"): return p
 	return ""
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -456,8 +532,14 @@ import fs  from 'fs';
 import { spawn } from 'child_process';
 
 const port    = parseInt(process.argv[2]);
-const lspBin  = process.argv[3];
-const lspArgs = process.argv.slice(4);
+const nodeDir = process.argv[3];
+const lspBin  = process.argv[4];
+const lspArgs = process.argv.slice(5);
+
+if (nodeDir) {
+  const sep = process.platform === 'win32' ? ';' : ':';
+  process.env.PATH = nodeDir + sep + (process.env.PATH || '');
+}
 
 const logStream = fs.createWriteStream('%s', { flags: 'w' });
 function log(msg) {
