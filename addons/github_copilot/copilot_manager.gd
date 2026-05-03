@@ -1,6 +1,9 @@
 @tool
 extends Node
 
+## Main LSP manager for GitHub Copilot communication.
+## Handles LSP protocol, TCP communication, and authentication.
+
 signal suggestion_received(text: String)
 signal auth_status_changed(authenticated: bool)
 signal auth_device_code_ready(user_code: String, verify_uri: String)
@@ -8,37 +11,38 @@ signal auth_error(message: String)
 signal status_message(text: String)
 signal models_received(models: Array)
 
+const CopilotConsts := preload("res://addons/github_copilot/consts.gd")
+
 var _DEBUG: bool = false
 
-var _alive:         bool = false
-var _starting:      bool = false
-var _initialized:   bool = false
+var _alive: bool = false
+var _starting: bool = false
+var _initialized: bool = false
 var _authenticated: bool = false
 
-var _relay_pid:  int = -1
+var _relay_pid: int = -1
 var _tcp_server: TCPServer = null
-var _tcp_peer:   StreamPeerTCP = null
-var _tcp_port:   int = 0
+var _tcp_peer: StreamPeerTCP = null
+var _tcp_port: int = 0
 
-var _rpc_id:    int = 1
+var _rpc_id: int = 1
 var _callbacks: Dictionary = {}
 
-var _recv_buffer:  PackedByteArray = PackedByteArray()
+var _recv_buffer: PackedByteArray = PackedByteArray()
 var _doc_versions: Dictionary = {}
-var _pending_comp_id = null
+var _pending_comp_id: int = -1
 
 var _relay_log_path: String = ""
-var _current_model:  String = ""
+var _current_model: String = ""
 
-# ── Lifecycle ─────────────────────────────────────────────────────────────────
+func _ready() -> void:
+	pass
 
 func _process(_dt: float) -> void:
 	_poll_tcp()
 
 func _exit_tree() -> void:
 	_shutdown()
-
-# ── Public API ────────────────────────────────────────────────────────────────
 
 func is_authenticated() -> bool:
 	return _authenticated
@@ -67,18 +71,16 @@ func sign_out() -> void:
 func request_completion(text: String, line: int, col: int, uri: String) -> void:
 	if not _authenticated or not _initialized: return
 	_sync_doc(uri, text)
-	if _pending_comp_id != null:
-		_notify("$/cancelRequest", {"id": _pending_comp_id})
+	if _pending_comp_id >= 0:
+		_callbacks[_pending_comp_id] = null
 		_callbacks.erase(_pending_comp_id)
-		_pending_comp_id = null
-	var id := _next_id()
-	_pending_comp_id = id
+		_pending_comp_id = -1
 	_request("textDocument/inlineCompletion", {
 		"textDocument": {"uri": uri},
-		"position":     {"line": line, "character": col},
-		"context":      {"triggerKind": 2},
-	}, id, func(result):
-		_pending_comp_id = null
+		"position": {"line": line, "character": col},
+		"context": {"triggerKind": 2},
+	}, _next_id(), func(result):
+		_pending_comp_id = -1
 		var items: Array = result.get("items", [])
 		if items.is_empty(): return
 		var t: String = str(items[0].get("insertText", ""))
@@ -95,8 +97,6 @@ func get_relay_log() -> String:
 		return "(no relay log yet)"
 	var f := FileAccess.open(_relay_log_path, FileAccess.READ)
 	return f.get_as_text() if f else "(cannot read log)"
-
-# ── Model API ─────────────────────────────────────────────────────────────────
 
 func fetch_models() -> void:
 	if not _initialized or not _authenticated:
@@ -136,46 +136,45 @@ func _push_config() -> void:
 		settings["github"] = {"copilot": {"selectedCompletionModel": _current_model}}
 	_notify("workspace/didChangeConfiguration", {"settings": settings})
 
-# ── LSP startup ───────────────────────────────────────────────────────────────
-
 func _start_lsp() -> String:
 	_starting = true
 
 	var node := _which("node")
 	if node.is_empty():
 		_starting = false
-		return "Node.js not found in PATH.\nInstall Node.js >= 20.8 from https://nodejs.org"
+		return "Node.js not found in PATH.\nInstall Node.js >= %s from https://nodejs.org" % CopilotConsts.MIN_NODE_VERSION
 
 	var lsp_bin := ""; var lsp_args := []
 	var npx := _which("npx")
 	if not npx.is_empty():
-		lsp_bin  = npx
-		lsp_args = ["--yes", "@github/copilot-language-server@latest", "--stdio"]
+		lsp_bin = npx
+		lsp_args = ["--yes", CopilotConsts.LSP_PACKAGE + "@latest", "--stdio"]
 	else:
 		var lsp := _which("copilot-language-server")
 		if not lsp.is_empty():
 			lsp_bin = lsp; lsp_args = ["--stdio"]
 		else:
 			_starting = false
-			return "copilot-language-server not found.\nRun: npm install -g @github/copilot-language-server"
+			return "copilot-language-server not found.\nRun: npm install -g " + CopilotConsts.LSP_PACKAGE
 
-	var relay_path  := OS.get_temp_dir().path_join("copilot_relay.mjs")
-	_relay_log_path  = OS.get_temp_dir().path_join("copilot_relay.log")
+	var relay_path := OS.get_temp_dir().path_join(CopilotConsts.RELAY_SCRIPT_NAME)
+	_relay_log_path = OS.get_temp_dir().path_join(CopilotConsts.RELAY_LOG_NAME)
 
 	var f := FileAccess.open(relay_path, FileAccess.WRITE)
 	if not f:
 		_starting = false
 		return "Cannot write relay script to: " + relay_path
-	f.store_string(_relay_source(_relay_log_path)); f = null
+	f.store_string(_relay_script(_relay_log_path)); f = null
 
 	_tcp_server = TCPServer.new()
-	_tcp_port   = 0
-	for p in range(49200, 49300):
-		if _tcp_server.listen(p) == OK:
-			_tcp_port = p; break
-	if _tcp_port == 0:
+	_tcp_port = CopilotConsts.TCP_PORT_MIN
+	while _tcp_port < CopilotConsts.TCP_PORT_MAX:
+		if _tcp_server.listen(_tcp_port) == OK:
+			break
+		_tcp_port += 1
+	if _tcp_port >= CopilotConsts.TCP_PORT_MAX:
 		_starting = false
-		return "No free TCP port in 49200-49299"
+		return "No free TCP port in %d-%d" % [CopilotConsts.TCP_PORT_MIN, CopilotConsts.TCP_PORT_MAX]
 
 	var relay_args := [relay_path, str(_tcp_port), lsp_bin] + lsp_args
 	_relay_pid = OS.create_process(node, relay_args)
@@ -189,7 +188,7 @@ func _start_lsp() -> String:
 	return ""
 
 func _wait_for_tcp_connection() -> void:
-	for _i in range(80):   # 20 s
+	for i in range(CopilotConsts.FEATURE_CHECK_TIMEOUT):
 		await get_tree().create_timer(0.25).timeout
 		if not _alive: _starting = false; return
 		if _tcp_server and _tcp_server.is_connection_available():
@@ -202,21 +201,18 @@ func _wait_for_tcp_connection() -> void:
 	_starting = false; _alive = false
 	auth_error.emit("Timeout: LSP relay did not connect.\nLog: " + _relay_log_path)
 
-# ── LSP initialize ────────────────────────────────────────────────────────────
-
 func _send_initialize() -> void:
 	var ver: String = Engine.get_version_info().string
 	_request("initialize", {
-		"processId":  OS.get_process_id(),
+		"processId": OS.get_process_id(),
 		"clientInfo": {"name": "Godot", "version": ver},
 		"initializationOptions": {
-			"editorInfo":       {"name": "Godot", "version": ver},
-			"editorPluginInfo": {"name": "godot-copilot", "version": "2.1.0"},
+			"editorInfo": {"name": "Godot", "version": ver},
+			"editorPluginInfo": {"name": "godot-copilot", "version": CopilotConsts.PLUGIN_VERSION},
 		},
 		"capabilities": {
 			"workspace": {"workspaceFolders": true},
-			"window":    {"showDocument": {"support": true}},
-		},
+			"window": {"showDocument": {"support": true}},
 		"workspaceFolders": [],
 	}, _next_id(), func(_r):
 		_log("initialize OK")
@@ -229,11 +225,11 @@ func _send_initialize() -> void:
 		)
 	)
 
-func _check_status(after: Callable = func(_b): pass) -> void:
+func _check_status(after: Callable) -> void:
 	_request("checkStatus", {"options": {}}, _next_id(), func(result):
 		var s := str(result.get("status", ""))
 		var u := str(result.get("user", ""))
-		if s in ["OK", "AlreadySignedIn"]:
+		if s in [CopilotConsts.AUTH_STATUS_OK, CopilotConsts.AUTH_STATUS_ALREADY_SIGNED_IN]:
 			_set_auth(true, u); after.call(true)
 		else:
 			status_message.emit("Not signed in (status=" + s + ")")
@@ -247,7 +243,7 @@ func _do_sign_in() -> void:
 		var s := str(result.get("status", ""))
 		var u := str(result.get("user", ""))
 		match s:
-			"OK", "AlreadySignedIn":
+			CopilotConsts.AUTH_STATUS_OK, CopilotConsts.AUTH_STATUS_ALREADY_SIGNED_IN:
 				_set_auth(true, u)
 			"PromptUserDeviceFlow":
 				auth_device_code_ready.emit(
@@ -262,11 +258,11 @@ func _do_sign_in() -> void:
 
 func _poll_until_authed() -> void:
 	if _authenticated: return
-	await get_tree().create_timer(3.0).timeout
+	await get_tree().create_timer(CopilotConsts.AUTH_POLL_INTERVAL).timeout
 	if not _alive or not _initialized: return
 	_request("checkStatus", {"options": {}}, _next_id(), func(result):
 		var s := str(result.get("status", ""))
-		if s in ["OK", "AlreadySignedIn"]:
+		if s in [CopilotConsts.AUTH_STATUS_OK, CopilotConsts.AUTH_STATUS_ALREADY_SIGNED_IN]:
 			_set_auth(true, str(result.get("user", "")))
 		else:
 			_poll_until_authed()
@@ -277,12 +273,10 @@ func _set_auth(ok: bool, user: String = "") -> void:
 	auth_status_changed.emit(ok)
 	if ok:
 		status_message.emit("✓ Signed in" + (" as " + user if user else ""))
-		await get_tree().create_timer(0.5).timeout
+		await get_tree().create_timer(CopilotConsts.AUTH_INIT_DELAY).timeout
 		fetch_models()
 	else:
 		status_message.emit("Signed out")
-
-# ── Document sync ─────────────────────────────────────────────────────────────
 
 func _sync_doc(uri: String, text: String) -> void:
 	if not _doc_versions.has(uri):
@@ -293,17 +287,15 @@ func _sync_doc(uri: String, text: String) -> void:
 	else:
 		_doc_versions[uri] += 1
 		_notify("textDocument/didChange", {
-			"textDocument":   {"uri": uri, "version": _doc_versions[uri]},
+			"textDocument": {"uri": uri, "version": _doc_versions[uri]},
 			"contentChanges": [{"text": text}],
 		})
 
 func _lang(uri: String) -> String:
-	if uri.ends_with(".gd"):   return "gdscript"
-	if uri.ends_with(".cs"):   return "csharp"
+	if uri.ends_with(".gd"): return "gdscript"
+	if uri.ends_with(".cs"): return "csharp"
 	if uri.ends_with(".glsl"): return "glsl"
 	return "plaintext"
-
-# ── JSON-RPC ──────────────────────────────────────────────────────────────────
 
 func _next_id() -> int:
 	var id := _rpc_id; _rpc_id += 1; return id
@@ -319,10 +311,8 @@ func _send(msg: Dictionary) -> void:
 	if not _tcp_peer or _tcp_peer.get_status() != StreamPeerTCP.STATUS_CONNECTED:
 		return
 	var body_bytes := JSON.stringify(msg).to_utf8_buffer()
-	var header     := ("Content-Length: %d\r\n\r\n" % body_bytes.size()).to_utf8_buffer()
+	var header := ("Content-Length: %d\r\n\r\n" % body_bytes.size()).to_utf8_buffer()
 	_tcp_peer.put_data(header + body_bytes)
-
-# ── TCP polling ───────────────────────────────────────────────────────────────
 
 func _poll_tcp() -> void:
 	if not _tcp_peer or _tcp_peer.get_status() != StreamPeerTCP.STATUS_CONNECTED:
@@ -377,41 +367,32 @@ func _on_notification(method: String, params: Variant) -> void:
 			var s := str(params.get("status", ""))
 			var m := str(params.get("message", ""))
 			status_message.emit(s + (": " + m if m else ""))
-			if s in ["OK", "AlreadySignedIn"] and not _authenticated:
-				_set_auth(true)
-			elif s in ["NotSignedIn", "NotAuthorized"] and _authenticated:
-				_set_auth(false)
+			if s in [CopilotConsts.AUTH_STATUS_OK, CopilotConsts.AUTH_STATUS_ALREADY_SIGNED_IN]:
+				if not _authenticated: _set_auth(true)
+			elif s in [CopilotConsts.AUTH_STATUS_NOT_SIGNED_IN, CopilotConsts.AUTH_STATUS_NOT_AUTHORIZED]:
+				if _authenticated: _set_auth(false)
 		"window/logMessage":
 			_log("LSP: " + str(params.get("message", "")))
 		"window/showDocument":
 			var uri := str(params.get("uri", ""))
 			if not uri.is_empty(): OS.shell_open(uri)
-		_:
-			pass
-
-# ── Shutdown (COMPLETE process cleanup) ──────────────────────────────────────
 
 func _shutdown() -> void:
 	_log("Shutdown requested")
-	# 1. Graceful LSP shutdown
 	if _initialized:
 		_notify("shutdown", {})
 		_notify("exit", {})
-	# 2. Reset state
 	_alive = false; _starting = false; _initialized = false; _authenticated = false
-	# 3. Disconnect TCP
 	if _tcp_peer:
 		_tcp_peer.disconnect_from_host()
 		_tcp_peer = null
 	if _tcp_server:
 		_tcp_server.stop()
 		_tcp_server = null
-	# 4. Kill relay + any orphan node processes
 	_kill_relay()
-	# 5. Clean up callbacks to prevent dangling references
 	_callbacks.clear()
 	_doc_versions.clear()
-	_pending_comp_id = null
+	_pending_comp_id = -1
 	_log("Shutdown complete")
 
 func _kill_relay() -> void:
@@ -419,20 +400,12 @@ func _kill_relay() -> void:
 		_log("Killing relay pid=" + str(_relay_pid))
 		OS.kill(_relay_pid)
 		_relay_pid = -1
-	# Also try to kill any lingering npx/node processes that own our port
-	# by looking for the relay script in process list (best-effort)
-	_kill_orphan_relay()
-
-func _kill_orphan_relay() -> void:
-	# On Unix: fuser -k <port>/tcp  (silent fail if not available)
 	if OS.get_name() in ["Linux", "macOS", "FreeBSD"]:
 		OS.execute("fuser", ["-k", str(_tcp_port) + "/tcp"], [], true)
 
-# ── _which ────────────────────────────────────────────────────────────────────
-
 func _which(base: String) -> String:
 	var is_win := OS.get_name() == "Windows"
-	var cands  := ([base + ".cmd", base + ".exe", base] if is_win else [base]) as Array
+	var cands := ([base + ".cmd", base + ".exe", base] if is_win else [base]) as Array
 	for c in cands:
 		var out := []; var code := OS.execute("where" if is_win else "which", [c], out)
 		if code != 0 or out.is_empty(): continue
@@ -443,14 +416,10 @@ func _which(base: String) -> String:
 			return path
 	return ""
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-
 func _log(msg: String) -> void:
 	if _DEBUG: print("[Copilot] " + msg)
 
-# ── Relay source ──────────────────────────────────────────────────────────────
-
-func _relay_source(log_path: String) -> String:
+func _relay_script(log_path: String) -> String:
 	return """import net from 'net';
 import fs  from 'fs';
 import { spawn } from 'child_process';
@@ -481,7 +450,6 @@ lsp.stderr.on('data', d => log('lsp: '+d.toString().trimEnd()));
 lsp.on('error', e => { log('lsp error: '+e.message); process.exit(1); });
 lsp.on('exit', (c,s) => { log('lsp exit code='+c+' sig='+s); process.exit(c??1); });
 
-// Kill LSP when this relay process exits for any reason
 process.on('exit', () => { try { lsp.kill('SIGKILL'); } catch(e){} });
 process.on('SIGINT',  () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));

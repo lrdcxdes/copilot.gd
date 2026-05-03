@@ -2,58 +2,53 @@
 ## Bottom panel: Auth tab + Settings tab
 extends PanelContainer
 
-const CopilotSettings = preload("res://addons/github_copilot/copilot_settings.gd")
+const CopilotConsts := preload("res://addons/github_copilot/consts.gd")
 
 var _manager
-var _settings: CopilotSettings
+var _settings
 
 enum AuthState { SIGNED_OUT, WAITING, AUTHED, ERROR }
 var _auth_state := AuthState.SIGNED_OUT
 var _verify_uri := ""
-var _user_code  := ""
-var _user_name  := ""
+var _user_code := ""
+var _user_name := ""
 var _models_list: Array = []
 
-# ── Widgets ───────────────────────────────────────────────────────────────────
-# Auth tab
-var _dot:         Label
-var _lbl_status:  Label
-var _view_out:    Control
-var _view_wait:   Control
+var _dot: Label
+var _lbl_status: Label
+var _view_out: Control
+var _view_wait: Control
 var _view_authed: Control
-var _view_error:  Control
-var _btn_signin:  Button
-var _lbl_code:    Label
-var _btn_copy:    Button
+var _view_error: Control
+var _btn_signin: Button
+var _lbl_code: Label
+var _btn_copy: Button
 var _btn_browser: Button
-var _lbl_info:    Label
-var _lbl_user:    Label
-var _btn_model:   MenuButton
+var _lbl_info: Label
+var _lbl_user: Label
+var _btn_model: MenuButton
 var _btn_refresh: Button
 var _btn_signout: Button
-var _lbl_error:   Label
-var _btn_retry:   Button
+var _lbl_error: Label
+var _btn_retry: Button
 
-# Settings tab
-var _chk_auto_show:   CheckBox
-var _chk_auto_start:  CheckBox
-var _chk_remember:    CheckBox
-var _spin_debounce:   SpinBox
-var _color_ghost:     ColorPickerButton
-var _btn_save:        Button
-var _lbl_keybinds:    RichTextLabel
-var _btn_log:         Button
+var _chk_auto_show: CheckBox
+var _chk_auto_start: CheckBox
+var _chk_remember: CheckBox
+var _spin_debounce: SpinBox
+var _color_ghost: ColorPickerButton
+var _btn_save: Button
+var _lbl_keybinds: RichTextLabel
+var _btn_log: Button
 
-# Tabs
 var _tab_container: TabContainer
 
-# Spinner
 var _spin_chars := ["|", "/", "-", "\\"]
-var _spin_idx   := 0
+var _spin_idx := 0
 var _spin_timer: Timer
 
-func _init(manager, settings: CopilotSettings) -> void:
-	_manager  = manager
+func _init(manager, settings) -> void:
+	_manager = manager
 	_settings = settings
 
 func _ready() -> void:
@@ -77,13 +72,9 @@ func _ready() -> void:
 	_set_auth_state(AuthState.SIGNED_OUT)
 	_load_settings_to_ui()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# BUILD
-# ══════════════════════════════════════════════════════════════════════════════
-
 func _build() -> void:
 	var margin := MarginContainer.new()
-	for s in ["left","right","top","bottom"]:
+	for s in ["left", "right", "top", "bottom"]:
 		margin.add_theme_constant_override("margin_" + s, 4)
 	add_child(margin)
 
@@ -93,15 +84,12 @@ func _build() -> void:
 	_build_auth_tab()
 	_build_settings_tab()
 
-# ── Auth Tab ──────────────────────────────────────────────────────────────────
-
 func _build_auth_tab() -> void:
 	var root := HBoxContainer.new()
 	root.name = "Copilot"
 	root.add_theme_constant_override("separation", 12)
 	_tab_container.add_child(root)
 
-	# Brand
 	var left := VBoxContainer.new()
 	left.custom_minimum_size.x = 185
 	left.add_theme_constant_override("separation", 2)
@@ -115,7 +103,7 @@ func _build_auth_tab() -> void:
 	_dot.add_theme_font_size_override("font_size", 14)
 	title_row.add_child(_dot)
 
-	var title := Label.new(); title.text = "GitHub Copilot"
+	var title := Label.new(); title.text = CopilotConsts.PLUGIN_NAME
 	title.add_theme_font_size_override("font_size", 12)
 	title_row.add_child(title)
 
@@ -127,7 +115,6 @@ func _build_auth_tab() -> void:
 
 	root.add_child(_vsep())
 
-	# ── SIGNED OUT ──
 	_view_out = HBoxContainer.new()
 	_view_out.add_theme_constant_override("separation", 10)
 	root.add_child(_view_out)
@@ -137,12 +124,11 @@ func _build_auth_tab() -> void:
 	_view_out.add_child(_btn_signin)
 
 	var hint := Label.new()
-	hint.text = "Requires Node.js ≥ 20.8 + GitHub Copilot subscription."
+	hint.text = "Requires Node.js >= %s + GitHub Copilot subscription." % CopilotConsts.MIN_NODE_VERSION
 	hint.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
 	hint.add_theme_font_size_override("font_size", 10)
 	_view_out.add_child(hint)
 
-	# ── WAITING ──
 	_view_wait = HBoxContainer.new()
 	_view_wait.add_theme_constant_override("separation", 10)
 	root.add_child(_view_wait)
@@ -150,11 +136,11 @@ func _build_auth_tab() -> void:
 	var cp := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.10, 0.10, 0.10)
-	for side in [SIDE_LEFT,SIDE_RIGHT,SIDE_TOP,SIDE_BOTTOM]: sb.set_border_width(side, 1)
+	for side in [SIDE_LEFT, SIDE_RIGHT, SIDE_TOP, SIDE_BOTTOM]: sb.set_border_width(side, 1)
 	sb.border_color = Color(0.28, 0.28, 0.28)
-	for c in ["top_left","top_right","bottom_left","bottom_right"]: sb.set("corner_radius_"+c, 5)
-	sb.content_margin_left=12; sb.content_margin_right=12
-	sb.content_margin_top=3; sb.content_margin_bottom=3
+	for c in ["top_left", "top_right", "bottom_left", "bottom_right"]: sb.set("corner_radius_" + c, 5)
+	sb.content_margin_left = 12; sb.content_margin_right = 12
+	sb.content_margin_top = 3; sb.content_margin_bottom = 3
 	cp.add_theme_stylebox_override("panel", sb)
 	_view_wait.add_child(cp)
 
@@ -179,12 +165,10 @@ func _build_auth_tab() -> void:
 	_lbl_info.add_theme_font_size_override("font_size", 10)
 	_view_wait.add_child(_lbl_info)
 
-	# ── AUTHED ──
 	_view_authed = HBoxContainer.new()
 	_view_authed.add_theme_constant_override("separation", 14)
 	root.add_child(_view_authed)
 
-	# Keybindings summary
 	var kc := VBoxContainer.new(); kc.add_theme_constant_override("separation", 1)
 	_view_authed.add_child(kc)
 	var kt := Label.new(); kt.text = "Keybindings"
@@ -195,7 +179,6 @@ func _build_auth_tab() -> void:
 
 	_view_authed.add_child(_vsep())
 
-	# Model selector
 	var mc := VBoxContainer.new(); mc.add_theme_constant_override("separation", 2)
 	_view_authed.add_child(mc)
 	var ml := Label.new(); ml.text = "Model"
@@ -210,13 +193,12 @@ func _build_auth_tab() -> void:
 
 	_btn_refresh = Button.new(); _btn_refresh.text = "↺"; _btn_refresh.flat = true
 	_btn_refresh.tooltip_text = "Refresh model list"
-	_btn_refresh.pressed.connect(func(): _btn_refresh.disabled=true; _manager.fetch_models())
+	_btn_refresh.pressed.connect(func(): _btn_refresh.disabled = true; _manager.fetch_models())
 	mr.add_child(_btn_refresh)
 
 	var sp := Control.new(); sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_view_authed.add_child(sp)
 
-	# User + sign out
 	var uc := VBoxContainer.new(); uc.add_theme_constant_override("separation", 2)
 	_view_authed.add_child(uc)
 	_lbl_user = Label.new(); _lbl_user.text = ""
@@ -225,20 +207,17 @@ func _build_auth_tab() -> void:
 	_btn_signout = Button.new(); _btn_signout.text = "Sign Out"; _btn_signout.flat = true
 	_btn_signout.pressed.connect(_on_signout_pressed); uc.add_child(_btn_signout)
 
-	# ── ERROR ──
 	_view_error = HBoxContainer.new()
 	_view_error.add_theme_constant_override("separation", 10)
 	root.add_child(_view_error)
 
 	_lbl_error = Label.new(); _lbl_error.text = ""
 	_lbl_error.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
-	_lbl_error.autowrap_mode = TextServer.AUTOWRAP_WORD
+	_lbl_error.autowrap_mode = CopilotConsts.AUTOWRAP_WORD
 	_lbl_error.custom_minimum_size.x = 360; _view_error.add_child(_lbl_error)
 
 	_btn_retry = Button.new(); _btn_retry.text = "Try Again"
 	_btn_retry.pressed.connect(_on_signin_pressed); _view_error.add_child(_btn_retry)
-
-# ── Settings Tab ──────────────────────────────────────────────────────────────
 
 func _build_settings_tab() -> void:
 	var scroll := ScrollContainer.new()
@@ -252,7 +231,7 @@ func _build_settings_tab() -> void:
 	scroll.add_child(vbox)
 
 	var margin := MarginContainer.new()
-	for s in ["left","right","top","bottom"]:
+	for s in ["left", "right", "top", "bottom"]:
 		margin.add_theme_constant_override("margin_" + s, 8)
 	vbox.add_child(margin)
 
@@ -260,7 +239,6 @@ func _build_settings_tab() -> void:
 	inner.add_theme_constant_override("separation", 8)
 	margin.add_child(inner)
 
-	# ── Completion ───────────────────────────────────────────────────────────
 	inner.add_child(_section_label("Completion"))
 
 	_chk_auto_show = CheckBox.new()
@@ -272,7 +250,8 @@ func _build_settings_tab() -> void:
 	var deb_lbl := Label.new(); deb_lbl.text = "Trigger delay (seconds):"
 	deb_lbl.add_theme_font_size_override("font_size", 11); deb_row.add_child(deb_lbl)
 	_spin_debounce = SpinBox.new()
-	_spin_debounce.min_value = 0.2; _spin_debounce.max_value = 3.0
+	_spin_debounce.min_value = CopilotConsts.MIN_DEBOUNCE_DELAY
+	_spin_debounce.max_value = CopilotConsts.MAX_DEBOUNCE_DELAY
 	_spin_debounce.step = 0.05; _spin_debounce.custom_minimum_size.x = 80
 	deb_row.add_child(_spin_debounce)
 
@@ -285,7 +264,6 @@ func _build_settings_tab() -> void:
 
 	inner.add_child(_hsep())
 
-	# ── Session ──────────────────────────────────────────────────────────────
 	inner.add_child(_section_label("Session"))
 
 	_chk_auto_start = CheckBox.new()
@@ -298,7 +276,6 @@ func _build_settings_tab() -> void:
 
 	inner.add_child(_hsep())
 
-	# ── Keybindings info ─────────────────────────────────────────────────────
 	inner.add_child(_section_label("Keybindings"))
 
 	_lbl_keybinds = RichTextLabel.new()
@@ -314,7 +291,6 @@ func _build_settings_tab() -> void:
 
 	inner.add_child(_hsep())
 
-	# ── Debug ────────────────────────────────────────────────────────────────
 	inner.add_child(_section_label("Debug"))
 
 	_btn_log = Button.new(); _btn_log.text = "📋  View Relay Log"
@@ -323,14 +299,11 @@ func _build_settings_tab() -> void:
 
 	inner.add_child(_hsep())
 
-	# ── Save button ──────────────────────────────────────────────────────────
 	_btn_save = Button.new(); _btn_save.text = "  Save Settings  "
 	_btn_save.pressed.connect(_on_save_settings)
 	var save_row := HBoxContainer.new()
 	save_row.add_child(_btn_save)
 	inner.add_child(save_row)
-
-# ── UI helpers ────────────────────────────────────────────────────────────────
 
 func _vsep() -> VSeparator:
 	return VSeparator.new()
@@ -344,15 +317,13 @@ func _section_label(text: String) -> Label:
 	lbl.add_theme_color_override("font_color", Color(0.55, 0.75, 0.55))
 	return lbl
 
-# ── Auth state machine ────────────────────────────────────────────────────────
-
 func _set_auth_state(s: AuthState) -> void:
 	_auth_state = s
 	if not is_instance_valid(_view_out): return
-	_view_out.visible    = (s == AuthState.SIGNED_OUT)
-	_view_wait.visible   = (s == AuthState.WAITING)
+	_view_out.visible = (s == AuthState.SIGNED_OUT)
+	_view_wait.visible = (s == AuthState.WAITING)
 	_view_authed.visible = (s == AuthState.AUTHED)
-	_view_error.visible  = (s == AuthState.ERROR)
+	_view_error.visible = (s == AuthState.ERROR)
 	match s:
 		AuthState.SIGNED_OUT:
 			_lbl_status.text = "Not signed in"
@@ -374,8 +345,6 @@ func _set_auth_state(s: AuthState) -> void:
 			_lbl_status.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
 			_spin_timer.stop()
 
-# ── Model helpers ─────────────────────────────────────────────────────────────
-
 func _populate_models() -> void:
 	var popup := _btn_model.get_popup()
 	popup.clear()
@@ -384,7 +353,7 @@ func _populate_models() -> void:
 	for i in range(_models_list.size()):
 		var m: Dictionary = _models_list[i]
 		var label: String = m.get("modelName", m.get("name", m.get("id", "?")))
-		var id:    String = m.get("id", "")
+		var id: String = m.get("id", "")
 		popup.add_item(label, i + 1)
 		popup.set_item_checked(i + 1, _manager.get_current_model() == id)
 
@@ -395,29 +364,25 @@ func _model_display(id: String) -> String:
 			return m.get("modelName", m.get("name", id))
 	return id
 
-# ── Settings load/save ────────────────────────────────────────────────────────
-
 func _load_settings_to_ui() -> void:
 	if not is_instance_valid(_chk_auto_show): return
-	_chk_auto_show.button_pressed  = _settings.auto_show_completions
+	_chk_auto_show.button_pressed = _settings.auto_show_completions
 	_chk_auto_start.button_pressed = _settings.auto_start
-	_chk_remember.button_pressed   = _settings.remember_session
-	_spin_debounce.value           = _settings.debounce_delay
-	_color_ghost.color             = _settings.ghost_color
+	_chk_remember.button_pressed = _settings.remember_session
+	_spin_debounce.value = _settings.debounce_delay
+	_color_ghost.color = _settings.ghost_color
 
 func _on_save_settings() -> void:
 	_settings.auto_show_completions = _chk_auto_show.button_pressed
-	_settings.auto_start            = _chk_auto_start.button_pressed
-	_settings.remember_session      = _chk_remember.button_pressed
-	_settings.debounce_delay        = _spin_debounce.value
-	_settings.ghost_color           = _color_ghost.color
+	_settings.auto_start = _chk_auto_start.button_pressed
+	_settings.remember_session = _chk_remember.button_pressed
+	_settings.debounce_delay = _spin_debounce.value
+	_settings.ghost_color = _color_ghost.color
 	_settings.save_settings()
 	_btn_save.text = "✓  Saved!"
 	get_tree().create_timer(1.5).timeout.connect(func():
 		if is_instance_valid(_btn_save): _btn_save.text = "  Save Settings  "
 	)
-
-# ── Signal handlers ───────────────────────────────────────────────────────────
 
 func _on_signin_pressed() -> void:
 	_btn_signin.disabled = true; _btn_retry.disabled = true
@@ -470,7 +435,6 @@ func _on_models(models: Array) -> void:
 	_models_list = models
 	_btn_refresh.disabled = false
 	_populate_models()
-	# Restore saved model
 	if not _settings.saved_model_id.is_empty():
 		_manager.set_model(_settings.saved_model_id)
 		_btn_model.text = _model_display(_settings.saved_model_id)
@@ -482,20 +446,19 @@ func _on_model_selected(idx: int) -> void:
 		model_id = m.get("id", "")
 	_manager.set_model(model_id)
 	_btn_model.text = _model_display(model_id)
-	_settings.set_model(model_id)   # persist
+	_settings.set_model(model_id)
 	_populate_models()
 
 func _on_view_log() -> void:
 	var log_text: String = _manager.get_relay_log()
-	# Show in a popup
 	var dlg := AcceptDialog.new()
 	dlg.title = "Copilot Relay Log"
-	dlg.size  = Vector2(700, 400)
+	dlg.size = Vector2(700, 400)
 	var rt := RichTextLabel.new()
-	rt.text              = log_text
-	rt.fit_content       = false
-	rt.scroll_following  = true
-	rt.size_flags_vertical   = Control.SIZE_EXPAND_FILL
+	rt.text = log_text
+	rt.fit_content = false
+	rt.scroll_following = true
+	rt.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	rt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dlg.add_child(rt)
 	add_child(dlg)
